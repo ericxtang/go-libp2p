@@ -16,6 +16,7 @@ import (
 	pstore "github.com/libp2p/go-libp2p-peerstore"
 	protocol "github.com/libp2p/go-libp2p-protocol"
 	ma "github.com/multiformats/go-multiaddr"
+	madns "github.com/multiformats/go-multiaddr-dns"
 	msmux "github.com/multiformats/go-multistream"
 )
 
@@ -41,10 +42,11 @@ const (
 //  * uses an identity service to send + receive node information
 //  * uses a nat service to establish NAT port mappings
 type BasicHost struct {
-	network inet.Network
-	mux     *msmux.MultistreamMuxer
-	ids     *identify.IDService
-	natmgr  *natManager
+	network    inet.Network
+	mux        *msmux.MultistreamMuxer
+	ids        *identify.IDService
+	natmgr     *natManager
+	maResolver *madns.Resolver
 
 	NegotiateTimeout time.Duration
 
@@ -71,6 +73,7 @@ func New(net inet.Network, opts ...interface{}) *BasicHost {
 
 	// setup host services
 	h.ids = identify.NewIDService(h)
+	h.maResolver = madns.DefaultResolver
 
 	for _, o := range opts {
 		switch o := o.(type) {
@@ -81,6 +84,8 @@ func New(net inet.Network, opts ...interface{}) *BasicHost {
 			}
 		case metrics.Reporter:
 			h.bwc = o
+		case *madns.Resolver:
+			h.maResolver = o
 		}
 	}
 
@@ -288,14 +293,32 @@ func (h *BasicHost) newStream(ctx context.Context, p peer.ID, pid protocol.ID) (
 }
 
 // Connect ensures there is a connection between this host and the peer with
-// given peer.ID. Connect will absorb the addresses in pi into its internal
-// peerstore. If there is not an active connection, Connect will issue a
-// h.Network.Dial, and block until a connection is open, or an error is
-// returned.
+// given peer.ID. If there is not an active connection, Connect will issue a
+// h.Network.Dial, and block until a connection is open, or an error is returned.
+// Connect will absorb the addresses in pi into its internal peerstore.
+// It will also resolve any /dns4, /dns6, and /dnsaddr addresses.
 func (h *BasicHost) Connect(ctx context.Context, pi pstore.PeerInfo) error {
+	// TODO(lgierth) figure out whether /ipfs/$peerid needs to be stripped
+	addrs := []ma.Multiaddr{}
+	for _, addr := range pi.Addrs {
+		addrs = append(addrs, addr)
+		p2paddr := ma.Join(addr, ma.StringCast("/ipfs/"+pi.ID.Pretty()))
+
+		resaddrs, err := h.maResolver.Resolve(ctx, p2paddr)
+		if err != nil {
+			log.Infof("error resolving %s: %s", p2paddr, err)
+		}
+		for _, res := range resaddrs {
+			pi, err := pstore.InfoFromP2pAddr(res)
+			if err != nil {
+				log.Infof("error parsing %s: %s", res, err)
+			}
+			addrs = append(addrs, pi.Addrs...)
+		}
+	}
 
 	// absorb addresses into peerstore
-	h.Peerstore().AddAddrs(pi.ID, pi.Addrs, pstore.TempAddrTTL)
+	h.Peerstore().AddAddrs(pi.ID, addrs, pstore.TempAddrTTL)
 
 	cs := h.Network().ConnsToPeer(pi.ID)
 	if len(cs) > 0 {

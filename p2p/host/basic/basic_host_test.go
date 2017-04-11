@@ -10,7 +10,10 @@ import (
 	host "github.com/libp2p/go-libp2p-host"
 	inet "github.com/libp2p/go-libp2p-net"
 	testutil "github.com/libp2p/go-libp2p-netutil"
+	pstore "github.com/libp2p/go-libp2p-peerstore"
 	protocol "github.com/libp2p/go-libp2p-protocol"
+	ma "github.com/multiformats/go-multiaddr"
+	madns "github.com/multiformats/go-multiaddr-dns"
 )
 
 func TestHostSimple(t *testing.T) {
@@ -309,4 +312,47 @@ func TestProtoDowngrade(t *testing.T) {
 	}
 	s2.Close()
 
+}
+
+func TestAddrResolution(t *testing.T) {
+	ctx := context.Background()
+
+	p1, err := testutil.RandPeerID()
+	if err != nil {
+		t.Error(err)
+	}
+	p2, err := testutil.RandPeerID()
+	if err != nil {
+		t.Error(err)
+	}
+	addr1 := ma.StringCast("/dnsaddr/example.com")
+	addr2 := ma.StringCast("/ip4/192.0.2.1/tcp/123")
+	p2paddr1 := ma.StringCast("/dnsaddr/example.com/ipfs/" + p1.Pretty())
+	p2paddr2 := ma.StringCast("/ip4/192.0.2.1/tcp/123/ipfs/" + p1.Pretty())
+	p2paddr3 := ma.StringCast("/ip4/192.0.2.1/tcp/123/ipfs/" + p2.Pretty())
+
+	backend := &madns.MockBackend{
+		TXT: map[string][]string{"_dnsaddr.example.com": []string{
+			"dnsaddr=" + p2paddr2.String(), "dnsaddr=" + p2paddr3.String(),
+		}},
+	}
+	resolver := &madns.Resolver{Backend: backend}
+
+	h := New(testutil.GenSwarmNetwork(t, ctx), resolver)
+	defer h.Close()
+
+	pi, err := pstore.InfoFromP2pAddr(p2paddr1)
+	if err != nil {
+		t.Error(err)
+	}
+
+	tctx, cancel := context.WithTimeout(ctx, time.Millisecond*100)
+	defer cancel()
+	_ = h.Connect(tctx, *pi)
+
+	addrs := h.Peerstore().Addrs(pi.ID)
+
+	if len(addrs) != 2 || !addrs[0].Equal(addr1) || !addrs[1].Equal(addr2) {
+		t.Fatalf("expected [%s %s], got %+v", addr1, addr2, addrs)
+	}
 }
