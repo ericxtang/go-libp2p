@@ -28,12 +28,12 @@ func TestMdnsDiscovery(t *testing.T) {
 	a := bhost.New(netutil.GenSwarmNetwork(t, ctx))
 	b := bhost.New(netutil.GenSwarmNetwork(t, ctx))
 
-	sa, err := NewMdnsService(ctx, a, time.Second)
+	sa, err := NewMdnsService(ctx, a, time.Second, "someTag")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	sb, err := NewMdnsService(ctx, b, time.Second)
+	sb, err := NewMdnsService(ctx, b, time.Second, "someTag")
 	if err != nil {
 		t.Fatal(err)
 	}

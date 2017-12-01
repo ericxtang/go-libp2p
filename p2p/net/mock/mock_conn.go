@@ -54,7 +54,7 @@ func (c *conn) Close() error {
 
 func (c *conn) teardown() error {
 	for _, s := range c.allStreams() {
-		s.Close()
+		s.Reset()
 	}
 	c.net.removeConn(c)
 	c.net.notifyAll(func(n inet.Notifiee) {

@@ -11,8 +11,9 @@ import (
 )
 
 func TestNotifications(t *testing.T) {
+	const swarmSize = 5
 
-	mn, err := FullMeshLinked(context.Background(), 5)
+	mn, err := FullMeshLinked(context.Background(), swarmSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +24,7 @@ func TestNotifications(t *testing.T) {
 	nets := mn.Nets()
 	notifiees := make([]*netNotifiee, len(nets))
 	for i, pn := range nets {
-		n := newNetNotifiee()
+		n := newNetNotifiee(swarmSize)
 		pn.Notify(n)
 		notifiees[i] = n
 	}
@@ -193,14 +194,14 @@ type netNotifiee struct {
 	closedStream chan inet.Stream
 }
 
-func newNetNotifiee() *netNotifiee {
+func newNetNotifiee(buffer int) *netNotifiee {
 	return &netNotifiee{
-		listen:       make(chan ma.Multiaddr),
-		listenClose:  make(chan ma.Multiaddr),
-		connected:    make(chan inet.Conn),
-		disconnected: make(chan inet.Conn),
-		openedStream: make(chan inet.Stream),
-		closedStream: make(chan inet.Stream),
+		listen:       make(chan ma.Multiaddr, buffer),
+		listenClose:  make(chan ma.Multiaddr, buffer),
+		connected:    make(chan inet.Conn, buffer),
+		disconnected: make(chan inet.Conn, buffer),
+		openedStream: make(chan inet.Stream, buffer),
+		closedStream: make(chan inet.Stream, buffer),
 	}
 }
 

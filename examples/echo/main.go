@@ -153,8 +153,12 @@ func main() {
 	// a user-defined protocol name.
 	ha.SetStreamHandler("/echo/1.0.0", func(s net.Stream) {
 		log.Println("Got a new stream!")
-		defer s.Close()
-		doEcho(s)
+		if err := doEcho(s); err != nil {
+			log.Println(err)
+			s.Reset()
+		} else {
+			s.Close()
+		}
 	})
 
 	if *target == "" {
@@ -213,18 +217,14 @@ func main() {
 }
 
 // doEcho reads a line of data a stream and writes it back
-func doEcho(s net.Stream) {
+func doEcho(s net.Stream) error {
 	buf := bufio.NewReader(s)
 	str, err := buf.ReadString('\n')
 	if err != nil {
-		log.Println(err)
-		return
+		return err
 	}
 
 	log.Printf("read: %s\n", str)
 	_, err = s.Write([]byte(str))
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	return err
 }

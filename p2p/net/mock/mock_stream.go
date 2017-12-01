@@ -2,38 +2,50 @@ package mocknet
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"time"
 
-	process "github.com/jbenet/goprocess"
 	inet "github.com/libp2p/go-libp2p-net"
 	protocol "github.com/libp2p/go-libp2p-protocol"
 )
 
 // stream implements inet.Stream
 type stream struct {
-	Pipe      net.Conn
+	write     *io.PipeWriter
+	read      *io.PipeReader
 	conn      *conn
 	toDeliver chan *transportObject
-	proc      process.Process
+
+	reset  chan struct{}
+	close  chan struct{}
+	closed chan struct{}
+
+	state error
 
 	protocol protocol.ID
 }
+
+var ErrReset error = errors.New("stream reset")
+var ErrClosed error = errors.New("stream closed")
 
 type transportObject struct {
 	msg         []byte
 	arrivalTime time.Time
 }
 
-func NewStream(p net.Conn) *stream {
+func NewStream(w *io.PipeWriter, r *io.PipeReader) *stream {
 	s := &stream{
-		Pipe:      p,
+		read:      r,
+		write:     w,
+		reset:     make(chan struct{}, 1),
+		close:     make(chan struct{}, 1),
+		closed:    make(chan struct{}),
 		toDeliver: make(chan *transportObject),
 	}
 
-	s.proc = process.WithTeardown(s.teardown)
-	s.proc.Go(s.transport)
+	go s.transport()
 	return s
 }
 
@@ -43,8 +55,8 @@ func (s *stream) Write(p []byte) (n int, err error) {
 	delay := l.GetLatency() + l.RateLimit(len(p))
 	t := time.Now().Add(delay)
 	select {
-	case <-s.proc.Closing(): // bail out if we're closing.
-		return 0, io.ErrClosedPipe
+	case <-s.closed: // bail out if we're closing.
+		return 0, s.state
 	case s.toDeliver <- &transportObject{msg: p, arrivalTime: t}:
 	}
 	return len(p), nil
@@ -59,21 +71,44 @@ func (s *stream) SetProtocol(proto protocol.ID) {
 }
 
 func (s *stream) Close() error {
-	return s.proc.Close()
+	select {
+	case s.close <- struct{}{}:
+	default:
+	}
+	<-s.closed
+	if s.state != ErrClosed {
+		return s.state
+	}
+	return nil
 }
 
-// teardown shuts down the stream. it is called by s.proc.Close()
-// after all the children of this s.proc (i.e. transport's proc)
-// are done.
-func (s *stream) teardown() error {
-	// at this point, no streams are writing.
+func (s *stream) Reset() error {
+	// Cancel any pending writes.
+	s.write.Close()
 
+	select {
+	case s.reset <- struct{}{}:
+	default:
+	}
+	<-s.closed
+	if s.state != ErrReset {
+		return s.state
+	}
+	return nil
+}
+
+func (s *stream) teardown() {
+	s.write.Close()
+
+	// at this point, no streams are writing.
 	s.conn.removeStream(s)
-	s.Pipe.Close()
+
+	// Mark as closed.
+	close(s.closed)
+
 	s.conn.net.notifyAll(func(n inet.Notifiee) {
 		n.ClosedStream(s.conn.net, s)
 	})
-	return nil
 }
 
 func (s *stream) Conn() inet.Conn {
@@ -81,33 +116,44 @@ func (s *stream) Conn() inet.Conn {
 }
 
 func (s *stream) SetDeadline(t time.Time) error {
-	return s.Pipe.SetDeadline(t)
+	return &net.OpError{Op: "set", Net: "pipe", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
 }
 
 func (s *stream) SetReadDeadline(t time.Time) error {
-	return s.Pipe.SetReadDeadline(t)
+	return &net.OpError{Op: "set", Net: "pipe", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
 }
 
 func (s *stream) SetWriteDeadline(t time.Time) error {
-	return s.Pipe.SetWriteDeadline(t)
+	return &net.OpError{Op: "set", Net: "pipe", Source: nil, Addr: nil, Err: errors.New("deadline not supported")}
 }
 
 func (s *stream) Read(b []byte) (int, error) {
-	return s.Pipe.Read(b)
+	return s.read.Read(b)
 }
 
 // transport will grab message arrival times, wait until that time, and
 // then write the message out when it is scheduled to arrive
-func (s *stream) transport(proc process.Process) {
+func (s *stream) transport() {
+	defer s.teardown()
+
 	bufsize := 256
 	buf := new(bytes.Buffer)
-	ticker := time.NewTicker(time.Millisecond * 4)
+	timer := time.NewTimer(0)
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+
+	// cleanup
+	defer timer.Stop()
 
 	// writeBuf writes the contents of buf through to the s.Writer.
 	// done only when arrival time makes sense.
 	drainBuf := func() {
 		if buf.Len() > 0 {
-			_, err := s.Pipe.Write(buf.Bytes())
+			_, err := s.write.Write(buf.Bytes())
 			if err != nil {
 				return
 			}
@@ -121,44 +167,64 @@ func (s *stream) transport(proc process.Process) {
 	deliverOrWait := func(o *transportObject) {
 		buffered := len(o.msg) + buf.Len()
 
-		now := time.Now()
-		if now.Before(o.arrivalTime) {
-			if buffered < bufsize {
-				buf.Write(o.msg)
-				return
+		// Yes, we can end up extending a timer multiple times if we
+		// keep on making small writes but that shouldn't be too much of an
+		// issue. Fixing that would be painful.
+		if !timer.Stop() {
+			// FIXME: So, we *shouldn't* need to do this but we hang
+			// here if we don't... Go bug?
+			select {
+			case <-timer.C:
+			default:
 			}
-
-			// we do not buffer + return here, instead hanging the
-			// call (i.e. not accepting any more transportObjects)
-			// so that we apply back-pressure to the sender.
-			// this sleep should wake up same time as ticker.
-			time.Sleep(o.arrivalTime.Sub(now))
+		}
+		delay := o.arrivalTime.Sub(time.Now())
+		if delay >= 0 {
+			timer.Reset(delay)
+		} else {
+			timer.Reset(0)
 		}
 
-		// ok, we waited our due time. now rite the buf + msg.
-
-		// drainBuf first, before we write this message.
-		drainBuf()
-
-		// write this message.
-		_, err := s.Pipe.Write(o.msg)
-		if err != nil {
-			log.Error("mock_stream", err)
+		if buffered >= bufsize {
+			select {
+			case <-timer.C:
+			case <-s.reset:
+				s.reset <- struct{}{}
+				return
+			}
+			drainBuf()
+			// write this message.
+			_, err := s.write.Write(o.msg)
+			if err != nil {
+				log.Error("mock_stream", err)
+			}
+		} else {
+			buf.Write(o.msg)
 		}
 	}
 
 	for {
+		// Reset takes precedent.
 		select {
-		case <-proc.Closing():
-			return // bail out of here.
+		case <-s.reset:
+			s.state = ErrReset
+			s.read.CloseWithError(ErrReset)
+			return
+		default:
+		}
 
-		case o, ok := <-s.toDeliver:
-			if !ok {
-				return
-			}
+		select {
+		case <-s.reset:
+			s.state = ErrReset
+			s.read.CloseWithError(ErrReset)
+			return
+		case <-s.close:
+			s.state = ErrClosed
+			drainBuf()
+			return
+		case o := <-s.toDeliver:
 			deliverOrWait(o)
-
-		case <-ticker.C: // ok, due to write it out.
+		case <-timer.C: // ok, due to write it out.
 			drainBuf()
 		}
 	}

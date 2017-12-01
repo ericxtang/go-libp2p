@@ -31,7 +31,7 @@ type peernet struct {
 	streamHandler inet.StreamHandler
 	connHandler   inet.ConnHandler
 
-	notifmu sync.RWMutex
+	notifmu sync.Mutex
 	notifs  map[inet.Notifiee]struct{}
 
 	proc goprocess.Process
@@ -205,7 +205,7 @@ func (pn *peernet) removeConn(c *conn) {
 
 	cs, found = pn.connsByPeer[c.remote]
 	if !found {
-		panic(fmt.Sprintf("attempting to remove a conn that doesnt exist %p", c.remote))
+		panic(fmt.Sprintf("attempting to remove a conn that doesnt exist %v", c.remote))
 	}
 	delete(cs, c)
 }
@@ -381,11 +381,17 @@ func (pn *peernet) StopNotify(f inet.Notifiee) {
 
 // notifyAll runs the notification function on all Notifiees
 func (pn *peernet) notifyAll(notification func(f inet.Notifiee)) {
-	pn.notifmu.RLock()
+	pn.notifmu.Lock()
+	var wg sync.WaitGroup
 	for n := range pn.notifs {
 		// make sure we dont block
 		// and they dont block each other.
-		go notification(n)
+		wg.Add(1)
+		go func(n inet.Notifiee) {
+			defer wg.Done()
+			notification(n)
+		}(n)
 	}
-	pn.notifmu.RUnlock()
+	wg.Wait()
+	pn.notifmu.Unlock()
 }

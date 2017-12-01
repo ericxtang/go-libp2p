@@ -146,7 +146,7 @@ a problem.
 	h2pi := h2.Peerstore().PeerInfo(h2.ID())
 	log.Debugf("dialing %s", h2pi.Addrs)
 	if err := h1.Connect(ctx, h2pi); err != nil {
-		t.Fatalf("Failed to connect:", err)
+		t.Fatal("Failed to connect:", err)
 	}
 
 	// launch sender!
@@ -266,7 +266,7 @@ func TestStBackpressureStreamWrite(t *testing.T) {
 			t.Error("read failed:", err)
 		}
 		if expect != n {
-			t.Error("read len differs: %d != %d", expect, n)
+			t.Errorf("read len differs: %d != %d", expect, n)
 		}
 	}
 
@@ -283,7 +283,7 @@ func TestStBackpressureStreamWrite(t *testing.T) {
 	h2pi := h2.Peerstore().PeerInfo(h2.ID())
 	log.Debugf("dialing %s", h2pi.Addrs)
 	if err := h1.Connect(ctx, h2pi); err != nil {
-		t.Fatalf("Failed to connect:", err)
+		t.Fatal("Failed to connect:", err)
 	}
 
 	// open a stream, from 2->1, this is our reader

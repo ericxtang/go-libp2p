@@ -31,8 +31,12 @@ func EchoStreamHandler(stream inet.Stream) {
 	c := stream.Conn()
 	log.Debugf("%s echoing %s", c.LocalPeer(), c.RemotePeer())
 	go func() {
-		defer stream.Close()
-		io.Copy(stream, stream)
+		_, err := io.Copy(stream, stream)
+		if err == nil {
+			stream.Close()
+		} else {
+			stream.Reset()
+		}
 	}()
 }
 
@@ -170,7 +174,7 @@ func SubtestConnSendDisc(t *testing.T, hosts []host.Host) {
 			h2pi := h2.Peerstore().PeerInfo(h2.ID())
 			log.Debugf("dialing %s", h2pi.Addrs)
 			if err := h1.Connect(ctx, h2pi); err != nil {
-				t.Fatalf("Failed to connect:", err)
+				t.Fatal("Failed to connect:", err)
 			}
 		}
 	}

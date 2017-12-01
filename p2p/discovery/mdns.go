@@ -37,6 +37,7 @@ type mdnsService struct {
 	server  *mdns.Server
 	service *mdns.MDNSService
 	host    host.Host
+	tag     string
 
 	lk       sync.Mutex
 	notifees []Notifee
@@ -61,7 +62,7 @@ func getDialableListenAddrs(ph host.Host) ([]*net.TCPAddr, error) {
 	return out, nil
 }
 
-func NewMdnsService(ctx context.Context, peerhost host.Host, interval time.Duration) (Service, error) {
+func NewMdnsService(ctx context.Context, peerhost host.Host, interval time.Duration, serviceTag string) (Service, error) {
 
 	// TODO: dont let mdns use logging...
 	golog.SetOutput(ioutil.Discard)
@@ -82,7 +83,10 @@ func NewMdnsService(ctx context.Context, peerhost host.Host, interval time.Durat
 	myid := peerhost.ID().Pretty()
 
 	info := []string{myid}
-	service, err := mdns.NewMDNSService(myid, ServiceTag, "", "", port, ipaddrs, info)
+	if serviceTag == "" {
+		serviceTag = ServiceTag
+	}
+	service, err := mdns.NewMDNSService(myid, serviceTag, "", "", port, ipaddrs, info)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +102,7 @@ func NewMdnsService(ctx context.Context, peerhost host.Host, interval time.Durat
 		service:  service,
 		host:     peerhost,
 		interval: interval,
+		tag:      serviceTag,
 	}
 
 	go s.pollForEntries(ctx)
@@ -126,7 +131,7 @@ func (m *mdnsService) pollForEntries(ctx context.Context) {
 			qp := &mdns.QueryParam{
 				Domain:  "local",
 				Entries: entriesCh,
-				Service: ServiceTag,
+				Service: m.tag,
 				Timeout: time.Second * 5,
 			}
 

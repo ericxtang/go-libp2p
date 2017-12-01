@@ -166,7 +166,7 @@ func TestNetworkSetup(t *testing.T) {
 
 	links12 = mn.LinksBetweenPeers(p1, p2)
 	if len(links12) != 0 {
-		t.Errorf("should be 0 now...", len(links12))
+		t.Error("should be 0 now...", len(links12))
 	}
 
 	links11 = mn.LinksBetweenPeers(p1, p1)
@@ -190,7 +190,7 @@ func TestNetworkSetup(t *testing.T) {
 
 	// first, no conns
 	if len(n2.Conns()) > 0 || len(n3.Conns()) > 0 {
-		t.Error("should have 0 conn. Got: (%d, %d)", len(n2.Conns()), len(n3.Conns()))
+		t.Errorf("should have 0 conn. Got: (%d, %d)", len(n2.Conns()), len(n3.Conns()))
 	}
 
 	// connect p2->p3
